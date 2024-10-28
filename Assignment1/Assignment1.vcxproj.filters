@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="gomuku-V1.0.cpp">
+    <ClCompile Include="gomuku-V2.3.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
