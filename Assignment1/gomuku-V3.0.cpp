@@ -69,11 +69,6 @@
 #define TURN "TURN"
 #define END "END"
 
-std::vector<std::vector<std::vector<uint64_t>>> zobristTable(BOARD_SIZE, std::vector<std::vector<uint64_t>>(BOARD_SIZE, std::vector<uint64_t>(3, 0)));
-std::unordered_map<uint64_t, int> transpositionTable;  // 哈希表缓存
-
-uint64_t currentHash = 0;
-
 const int KILL_POS = 1000;//杀棋位置
 const int PRIORITY_THREAT = 100; // 最高威胁级别
 const int HIGH_THREAT = 10; // 高威胁级别
@@ -90,7 +85,12 @@ const int SCORE_TWO = 100;//两头无堵的2连
 const int SCORE_ONE = 10;
 
 const double TIME_LIMIT = 1.5;
-const int MAX_DEPTH = 7;
+const int MAX_DEPTH = 9;
+
+const int HASH_EXACT = 0;
+const int HASH_ALPHA = 1;
+const int HASH_BETA = 2;
+const int UNKNOWN = -999999;
 
 int myFlag;
 int enemyFlag;
@@ -98,6 +98,16 @@ int enemyFlag;
 const int BOARD_MIDDLE_1 = 5;
 const int BOARD_MIDDLE_2 = 6;
 
+struct HashEntry {
+    int score;        // 棋盘的评分
+    int depth;        // 搜索深度
+    int flag;         // 哈希类型标志 (例如 EXACT、ALPHA、BETA)
+};
+
+std::vector<std::vector<std::vector<uint64_t>>> zobristTable(BOARD_SIZE, std::vector<std::vector<uint64_t>>(BOARD_SIZE, std::vector<uint64_t>(3, 0)));
+std::unordered_map<uint64_t, HashEntry> transpositionTable;
+
+uint64_t currentHash = 0;
 
 const std::unordered_map<int, int> ThreatMap = {
     //必胜情况
@@ -160,6 +170,26 @@ void updateHash(int row, int col, int piece) {
     currentHash ^= zobristTable[row][col][piece];
 }
 
+void storeHashEntry(uint64_t hashValue, int score, int flag) {
+    transpositionTable[hashValue] = { score,flag };
+}
+
+int retrieveHashEntry(uint64_t hashValue, int alpha, int beta) {
+    if (transpositionTable.find(hashValue) != transpositionTable.end()) {
+        HashEntry entry = transpositionTable[hashValue];
+        if (entry.flag == HASH_EXACT) {
+            return entry.score;
+        }
+        else if (entry.flag == HASH_ALPHA && entry.score <= alpha) {
+            return entry.score;
+        }
+        else if (entry.flag == HASH_BETA && entry.score >= beta) {
+            return entry.score;
+        }
+    }
+    return UNKNOWN;
+}
+
 struct Coordinate {
     int x;
     int y;
@@ -215,7 +245,7 @@ public:
     void UpdateCheckPos(int x, int y);
     void UndoUpdateCheckPos(int x, int y);
     void UpdateBoardScore(int x, int y);//每次落子时更新棋盘分数
-    void undoUpdateScore(int x,int y);
+    void undoUpdateScore(int x, int y);
     Board() {
         initializeZobristTable();
         MakeMove(BOARD_MIDDLE_1, BOARD_MIDDLE_2, BLACK);
@@ -234,39 +264,14 @@ public:
     }
     void UndoMove(int x, int y) {
         //undoUpdate(x, y, board[x][y]);
-        undoUpdateScore(x,y);
+        undoUpdateScore(x, y);
         UndoUpdateCheckPos(x, y);
         updateHash(x, y, EMPTY);
     }
 };
 int evaluateMove(Board& A, int x, int y, int currentPlayer);
 int CalculateLineScore(Board& A, int player, int index);
-//void Board::updateInitialLineInfo(int row, int col, int player) {
-//    int playerIdx = (player == BLACK) ? 0 : 1;
-//    line_info[playerIdx][rowIndex(row)]++;
-//    line_info[playerIdx][colIndex(col)]++;
-//
-//    // 仅更新长度大于等于 5 的对角线
-//    if (row - col >= -7 && row - col <= 7) {
-//        line_info[playerIdx][diagIndex(row, col)]++;
-//    }
-//    if (row + col >= 4 && row + col <= 18) {
-//        line_info[playerIdx][antiDiagIndex(row, col)]++;
-//    }
-//}
-//void Board::undoUpdate(int row, int col, int player) {
-//    int playerIdx = (player == BLACK) ? 0 : 1;
-//    line_info[playerIdx][rowIndex(row)]--;
-//    line_info[playerIdx][colIndex(col)]--;
-//
-//    // 仅更新长度大于等于 5 的对角线
-//    if (row - col >= -7 && row - col <= 7) {
-//        line_info[playerIdx][diagIndex(row, col)]--;
-//    }
-//    if (row + col >= 4 && row + col <= 18) {
-//        line_info[playerIdx][antiDiagIndex(row, col)]--;
-//    }
-//}
+
 void Board::UpdateCheckPos(int x, int y) {
     for (int i = -1; i < 2; i++) {
         for (int j = -1; j < 2; j++) {
@@ -317,7 +322,7 @@ void Board::UpdateBoardScore(int x, int y) {
     currentBoardScore[0] += evaluateMove(*this, x, y, BLACK);
     currentBoardScore[1] += evaluateMove(*this, x, y, WHITE);//在总分上更新四个条的分数
 }
-void Board::undoUpdateScore(int x,int y) {
+void Board::undoUpdateScore(int x, int y) {
     currentBoardScore[0] -= evaluateMove(*this, x, y, BLACK);
     currentBoardScore[1] -= evaluateMove(*this, x, y, WHITE);
     board[x][y] = EMPTY;
@@ -389,24 +394,30 @@ int CalculateLineScore(Board& A, int player, int index) {
     std::vector<int> window5(5, 1);  // 长度为5的窗口
     std::vector<int> window6(6, 1);  // 长度为6的窗口
 
+    window5[0] = 9; // 边缘
+    window6[0] = 9;
+
     // 初始化前5和6个位置的窗口
-    for (int i = 0; i < 5 && judgeInRange(temp); ++i) {
+    for (int i = 1; i < 5 && judgeInRange(temp); ++i) {
         window5[i] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
             (A.board[temp.x][temp.y] == player) ? 2 : 3;
         window6[i] = window5[i];
         temp.x += dRow;
         temp.y += dCol;
-    };
+    }
+
     if (judgeInRange(temp)) {
         window6[5] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
             (A.board[temp.x][temp.y] == player) ? 2 : 3;
         temp.x += dRow;
         temp.y += dCol;
     }
-    Coordinate pre(temp.x - 1, temp.y - 1);
-    // 滑动窗口，逐一移动位置
-    while (judgeInRange(pre)) {
+    Coordinate temp5(temp.x - 1, temp.y - 1);//
+    // 滑动窗口，逐一移动位置，直到 window6[5] == 9
+    while (window6[5] != 9 && window5[4] != 9) {
         int pattern5 = 0, pattern6 = 0;
+        bool matched5 = false, matched6 = false;
+
         // 将窗口内容转换为整数编码
         for (int i = 0; i < 5; ++i) {
             pattern5 = pattern5 * 10 + window5[i];
@@ -414,13 +425,44 @@ int CalculateLineScore(Board& A, int player, int index) {
         for (int i = 0; i < 6; ++i) {
             pattern6 = pattern6 * 10 + window6[i];
         }
-        //std::cout<<"pattern5:"<<pattern5<<" pattern6:"<<pattern6<<std::endl;
+
         // 检查当前5和6的窗口是否存在于ScoreMap中
         if (ScoreMap.find(pattern5) != ScoreMap.end()) {
             lineScore += ScoreMap.at(pattern5);
+            matched5 = true;
         }
         if (ScoreMap.find(pattern6) != ScoreMap.end()) {
             lineScore += ScoreMap.at(pattern6);
+            matched6 = true;
+        }
+
+        // 如果匹配成功，分别跳过相应的窗口长度继续检查
+        if (matched5) {
+            for (int i = 0; i < 4; ++i) {
+                if (i == 0 && window5[4] == 1) {
+                    window5[0] = window5[4];
+                    continue;
+                }
+                window5[i] = (A.board[temp5.x][temp5.y] == EMPTY) ? 1 :
+                    (A.board[temp5.x][temp5.y] == player) ? 2 : 3;
+                temp5.x += dRow;
+                temp5.y += dCol;
+            }
+        }
+        if (matched6) {
+            for (int i = 0; i < 5; ++i) {
+                if (i == 0 && window6[5] == 1) {
+                    window6[0] = window6[5];
+                    continue;
+                }
+                window6[i] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
+                    (A.board[temp.x][temp.y] == player) ? 2 : 3;
+                temp.x += dRow;
+                temp.y += dCol;
+            }
+        }
+        if (matched5 || matched6) {
+            continue;
         }
 
         // 移动窗口：移除旧的，添加新的
@@ -436,13 +478,12 @@ int CalculateLineScore(Board& A, int player, int index) {
                 (A.board[temp.x][temp.y] == player) ? 2 : 3;
         }
         else {
-            window6[5] = 3;//棋盘外
+            window6[5] = 9; // 棋盘外
         }
+
         // 移动到下一个位置
         temp.x += dRow;
         temp.y += dCol;
-        pre.x += dRow;
-        pre.y += dCol;
     }
 
     return lineScore;
@@ -572,7 +613,7 @@ bool detectThreats(int player, Board& A, Coordinate& CurrentMove, std::vector<Co
                         threatPosition2.x -= 2 * dRow;
                         threatPosition2.y -= 2 * dCol;
                     }
-                    if(evaluateMove(A, threatPosition1.x, threatPosition1.y,myFlag)>evaluateMove(A, threatPosition2.x, threatPosition2.y, myFlag))
+                    if (evaluateMove(A, threatPosition1.x, threatPosition1.y, myFlag) > evaluateMove(A, threatPosition2.x, threatPosition2.y, myFlag))
                     {
                         // 累加威胁值
                         if (threatMap.find(threatPosition1) != threatMap.end()) {
@@ -593,7 +634,7 @@ bool detectThreats(int player, Board& A, Coordinate& CurrentMove, std::vector<Co
                     }
                 }
                 // 其他单个空位的威胁位置
-                
+
                 else {
                     Coordinate threatPosition = temp;
                     if (pattern == 12222 || pattern == 13333) {
@@ -656,25 +697,32 @@ bool detectThreats(int player, Board& A, Coordinate& CurrentMove, std::vector<Co
 }
 
 int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& bestMove) {
-    if(depth!=MAX_DEPTH){
-        if (transpositionTable.find(currentHash) != transpositionTable.end()) {
-            return transpositionTable[currentHash];
+    if (depth == 5);
+    uint64_t hashValue = currentHash; // 假设 currentHash 是当前棋盘状态的哈希值
+    std::vector<Coordinate> moveline;
+    if (depth != MAX_DEPTH) {
+        int cachedScore = retrieveHashEntry(hashValue, alpha, beta);
+        if (cachedScore != UNKNOWN) {
+            return cachedScore;
         }
     }
     int score1 = evaluateBoard(A, myFlag);
     int score2 = evaluateBoard(A, enemyFlag);
 
     if (score1 >= SCORE_FIVE) {
-        return MAX_SCORE-1;
+        return MAX_SCORE - 1;
     }
     if (score2 >= SCORE_FIVE) {
-        return MIN_SCORE+1;
+        return MIN_SCORE + 1;
     }
     //任意一方取胜直接返回（相当于到达叶节点）
     if (depth == 0) {
-        return score1 -  score2;  // 到达递归深度时返回评估值
+        int finalScore = score1 - score2;
+        storeHashEntry(hashValue, finalScore, HASH_EXACT);
+        return finalScore;  // 到达递归深度时返回评估值
     }
     int count = 0;
+    int flag = UNKNOWN;
     std::vector<Coordinate> possiblePositions = generateAndSortMoves(A, player);
     if (player == myFlag) {  // Maximizing player (AI)
         int value = _INF;
@@ -686,7 +734,8 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
             value = std::max(value, AlphaBeta(A, depth - 1, alpha, beta, enemyFlag, bestMove));
             if (value > alpha) {
                 alpha = value;
-                if(depth==MAX_DEPTH)
+                flag = HASH_EXACT;
+                if (depth == MAX_DEPTH)
                 {
                     bestMove = pos;
                 }
@@ -694,17 +743,17 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
             /*if (depth == MAX_DEPTH) {
                 std::cout << "(" << pos.x << "," << pos.y << ")" << "score:" << value << std::endl;
             }*/
-
             A.UndoMove(pos.x, pos.y);
-            if (value >= beta) {  // Beta 剪枝
-                break;
-            }
             count++;
             if (count >= 5) {
                 break;
             }
+            if (value >= beta) {  // Beta 剪枝
+                flag = HASH_BETA;
+                break;
+            }
         }
-        transpositionTable[currentHash] = value;
+        storeHashEntry(hashValue, value, flag);
         return value;
     }
     else {  // Minimizing player (Opponent)
@@ -716,20 +765,21 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
             value = std::min(value, AlphaBeta(A, depth - 1, alpha, beta, myFlag, bestMove));
 
             if (value < beta) {
+                flag = HASH_EXACT;
                 beta = value;
             }
 
             A.UndoMove(pos.x, pos.y);
-
-            if (value <= alpha) {  // Alpha 剪枝
-                break;
-            }
             count++;
             if (count >= 5) {
                 break;
             }
+            if (value <= alpha) {  // Alpha 剪枝
+                flag = HASH_ALPHA;
+                break;
+            }
         }
-        transpositionTable[currentHash] = value;
+        storeHashEntry(hashValue, value, flag);
         return value;
     }
 }
@@ -762,6 +812,7 @@ void loop()
             else {
                 AlphaBeta(A, MAX_DEPTH, _INF, INF, myFlag, BestMove);
             }
+            
             if (!judgeInRange(BestMove)) {
                 for (int i = 0; i < BOARD_SIZE; i++) {
                     for (int j = 0; j < BOARD_SIZE; j++) {
@@ -774,6 +825,7 @@ void loop()
             A.MakeMove(BestMove.x, BestMove.y, myFlag);
             printf("%d %d\n", BestMove.x, BestMove.y);
             fflush(stdout);
+            std::cout << "black:" << A.currentBoardScore[0] << "white:" << A.currentBoardScore[1] << std::endl;
         }
 
         else if (strcmp(tag, END) == 0) {
