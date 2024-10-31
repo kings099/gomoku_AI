@@ -4,6 +4,7 @@
 #include <string.h>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <queue>
 #include <array>
 #include <vector>
@@ -76,16 +77,16 @@ const int NOMAL_THREAT = 1; //一般威胁
 
 
 const int SCORE_FIVE = 500000;
-const int SCORE_FOUR = 40000;//两头无堵的4连
-const int SCORE_BLOCKED_FOUR = 1000;//一端无堵的4连
+const int SCORE_FOUR = 100000;//两头无堵的4连
+const int SCORE_BLOCKED_FOUR = 50000;//一端无堵的4连
 
-const int SCORE_THREE = 1000;//两头无堵的3连
+const int SCORE_THREE = 10000;//两头无堵的3连
 const int SCORE_BLOCKED_THREE = 1000;//堵了一边的3连
 const int SCORE_TWO = 100;//两头无堵的2连
 const int SCORE_ONE = 10;
 
 const double TIME_LIMIT = 1.5;
-const int MAX_DEPTH = 9;
+int MAX_DEPTH = 7;
 
 const int HASH_EXACT = 0;
 const int HASH_ALPHA = 1;
@@ -100,7 +101,6 @@ const int BOARD_MIDDLE_2 = 6;
 
 struct HashEntry {
     int score;        // 棋盘的评分
-    int depth;        // 搜索深度
     int flag;         // 哈希类型标志 (例如 EXACT、ALPHA、BETA)
 };
 
@@ -109,30 +109,30 @@ std::unordered_map<uint64_t, HashEntry> transpositionTable;
 
 uint64_t currentHash = 0;
 
-const std::unordered_map<int, int> ThreatMap = {
-    //必胜情况
-    {22222, PRIORITY_THREAT},// XXXXX
-    {12222,PRIORITY_THREAT},// _XXXX
-    {22221, PRIORITY_THREAT},// XXXX_
-    {22212, PRIORITY_THREAT},// XXX_X
-    {21222,PRIORITY_THREAT},//  X_XXX
-    {22122, PRIORITY_THREAT},// XX_XX
-
-    // 高威胁棋
-    {12221, HIGH_THREAT},
-    {12122, HIGH_THREAT},//_X_XX
-    {12212, HIGH_THREAT},
-    {21221,HIGH_THREAT},
-
-    {33331,KILL_POS},//我方杀棋
-    {13333,KILL_POS},
-    {33313,KILL_POS},
-    {31333,KILL_POS},
-    {33133,KILL_POS},
-
-    {13331,20},
-
-};
+//const std::unordered_map<int, int> ThreatMap = {
+//    //必胜情况
+//    {22222, PRIORITY_THREAT},// XXXXX
+//    {12222,PRIORITY_THREAT},// _XXXX
+//    {22221, PRIORITY_THREAT},// XXXX_
+//    {22212, PRIORITY_THREAT},// XXX_X
+//    {21222,PRIORITY_THREAT},//  X_XXX
+//    {22122, PRIORITY_THREAT},// XX_XX
+//
+//    // 高威胁棋
+//    {12221, HIGH_THREAT},
+//    {12122, HIGH_THREAT},//_X_XX
+//    {12212, HIGH_THREAT},
+//    {21221,HIGH_THREAT},
+//
+//    {33331,KILL_POS},//我方杀棋
+//    {13333,KILL_POS},
+//    {33313,KILL_POS},
+//    {31333,KILL_POS},
+//    {33133,KILL_POS},
+//
+//    {13331,20},
+//
+//};
 
 const std::unordered_map<int, int> ScoreMap = {
     // 16种评分
@@ -142,11 +142,13 @@ const std::unordered_map<int, int> ScoreMap = {
     {112221, SCORE_THREE},// __XXX_
     {122121,SCORE_THREE},//  _XX_X_
     {121221, SCORE_THREE},// _X_XX_
-    {22221, SCORE_THREE},//XXXX_
-    {12222,SCORE_THREE},//_XXXX
+    {22221, SCORE_BLOCKED_FOUR},//XXXX_
+    {12222,SCORE_BLOCKED_FOUR},//_XXXX
     {22122,SCORE_THREE},//XX_XX
-    {21222,SCORE_THREE},//X_XXX
-    {22212,SCORE_THREE},//XXX_X
+    {21222,SCORE_BLOCKED_FOUR},//X_XXX
+    {22212,SCORE_BLOCKED_FOUR},//XXX_X
+    {32221,SCORE_BLOCKED_THREE},
+    {12223,SCORE_BLOCKED_THREE},
     {112211,SCORE_TWO},//__XX__
     {112121,SCORE_TWO},//__X_X_
     {121211,SCORE_TWO},//_X_X__
@@ -195,9 +197,9 @@ struct Coordinate {
     int y;
     int score;
     //默认构造函数
-    Coordinate() :x(-1), y(-1) {}
+    Coordinate() :x(-1), y(-1), score(0) {}
     // 带参构造函数
-    Coordinate(int row, int col) :x(row), y(col) {}
+    Coordinate(int row, int col) :x(row), y(col),score(0) {}
     Coordinate(int row, int col, int _score) :x(row), y(col), score(_score) {}
     bool operator==(const Coordinate& other) const {
         return x == other.x && y == other.y;
@@ -240,8 +242,6 @@ public:
     int colIndex(int col) { return 12 + col; }
     int diagIndex(int row, int col) { return 31 - (row - col); }
     int antiDiagIndex(int row, int col) { return 39 + (row + col - 4); }
-    //void updateInitialLineInfo(int row, int col, int player);
-    //void undoUpdate(int row, int col, int player);
     void UpdateCheckPos(int x, int y);
     void UndoUpdateCheckPos(int x, int y);
     void UpdateBoardScore(int x, int y);//每次落子时更新棋盘分数
@@ -258,15 +258,13 @@ public:
     {
         board[x][y] = player;
         UpdateBoardScore(x, y);
-        //updateInitialLineInfo(x, y, player);
         UpdateCheckPos(x, y);
         updateHash(x, y, player);
     }
     void UndoMove(int x, int y) {
-        //undoUpdate(x, y, board[x][y]);
+        updateHash(x, y, board[x][y]);
         undoUpdateScore(x, y);
         UndoUpdateCheckPos(x, y);
-        updateHash(x, y, EMPTY);
     }
 };
 int evaluateMove(Board& A, int x, int y, int currentPlayer);
@@ -391,96 +389,68 @@ int CalculateLineScore(Board& A, int player, int index) {
     Coordinate temp;
     int dRow, dCol;
     GetDir(temp, index, dRow, dCol);
-    std::vector<int> window5(5, 1);  // 长度为5的窗口
-    std::vector<int> window6(6, 1);  // 长度为6的窗口
+    std::vector<int> window(6, 1);  // 长度为6的窗口
 
-    window5[0] = 9; // 边缘
-    window6[0] = 9;
+    window[0] = 9;
 
     // 初始化前5和6个位置的窗口
-    for (int i = 1; i < 5 && judgeInRange(temp); ++i) {
-        window5[i] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
-            (A.board[temp.x][temp.y] == player) ? 2 : 3;
-        window6[i] = window5[i];
-        temp.x += dRow;
-        temp.y += dCol;
-    }
-
-    if (judgeInRange(temp)) {
-        window6[5] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
+    for (int i = 1; i < 6 && judgeInRange(temp); ++i) {
+        window[i] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
             (A.board[temp.x][temp.y] == player) ? 2 : 3;
         temp.x += dRow;
         temp.y += dCol;
     }
     Coordinate temp5(temp.x - 1, temp.y - 1);//
     // 滑动窗口，逐一移动位置，直到 window6[5] == 9
-    while (window6[5] != 9 && window5[4] != 9) {
+    while (window[4] != 9) {
         int pattern5 = 0, pattern6 = 0;
-        bool matched5 = false, matched6 = false;
+        bool matched = false;
 
         // 将窗口内容转换为整数编码
         for (int i = 0; i < 5; ++i) {
-            pattern5 = pattern5 * 10 + window5[i];
+            pattern5 = pattern5 * 10 + window[i];
         }
-        for (int i = 0; i < 6; ++i) {
-            pattern6 = pattern6 * 10 + window6[i];
-        }
+        pattern6 = pattern5 * 10 + window[5];
 
         // 检查当前5和6的窗口是否存在于ScoreMap中
         if (ScoreMap.find(pattern5) != ScoreMap.end()) {
             lineScore += ScoreMap.at(pattern5);
-            matched5 = true;
+            matched = true;
         }
         if (ScoreMap.find(pattern6) != ScoreMap.end()) {
             lineScore += ScoreMap.at(pattern6);
-            matched6 = true;
+            matched = true;
         }
 
         // 如果匹配成功，分别跳过相应的窗口长度继续检查
-        if (matched5) {
-            for (int i = 0; i < 4; ++i) {
-                if (i == 0 && window5[4] == 1) {
-                    window5[0] = window5[4];
-                    continue;
-                }
-                window5[i] = (A.board[temp5.x][temp5.y] == EMPTY) ? 1 :
-                    (A.board[temp5.x][temp5.y] == player) ? 2 : 3;
-                temp5.x += dRow;
-                temp5.y += dCol;
-            }
-        }
-        if (matched6) {
+        if (matched) {
             for (int i = 0; i < 5; ++i) {
-                if (i == 0 && window6[5] == 1) {
-                    window6[0] = window6[5];
+                if (i == 0 && window[5] == 1) {
+                    window[0] = window[5];//当前匹配模式成功且窗口最后一项为empty
                     continue;
                 }
-                window6[i] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
-                    (A.board[temp.x][temp.y] == player) ? 2 : 3;
-                temp.x += dRow;
-                temp.y += dCol;
+                else {
+                    window[i] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
+                        (A.board[temp.x][temp.y] == player) ? 2 : 3;
+                    temp.x += dRow;
+                    temp.y += dCol;
+                }
             }
-        }
-        if (matched5 || matched6) {
             continue;
         }
 
         // 移动窗口：移除旧的，添加新的
-        for (int i = 0; i < 4; ++i) {
-            window5[i] = window5[i + 1];
-            window6[i] = window6[i + 1];
+        for (int i = 0; i < 5; ++i) {
+            window[i] = window[i + 1];
         }
-        window6[4] = window6[5];
-        window5[4] = window6[5];
 
         if (judgeInRange(temp)) {
-            window6[5] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
+            window[5] = (A.board[temp.x][temp.y] == EMPTY) ? 1 :
                 (A.board[temp.x][temp.y] == player) ? 2 : 3;
         }
         else {
-            window6[5] = 9; // 棋盘外
+            window[5] = 9; // 棋盘外
         }
-
         // 移动到下一个位置
         temp.x += dRow;
         temp.y += dCol;
@@ -498,7 +468,7 @@ int evaluateBoard(Board& A, int player) {
     }
 }
 
-std::vector<Coordinate> generateAndSortMoves(Board& A, int player) {
+std::vector<Coordinate> generateAndSortMoves(Board& A, int player, bool killermode) {
     int opponent = (player == BLACK) ? WHITE : BLACK;
     // 使用最小堆来保存前10个最高分的坐标
     auto cmp = [](const Coordinate& a, const Coordinate& b) {
@@ -510,7 +480,9 @@ std::vector<Coordinate> generateAndSortMoves(Board& A, int player) {
         for (int col = 0; col < BOARD_SIZE; ++col) {
             if (A._checkpos[row][col]) {
                 int moveScore = evaluateMove(A, row, col, player);
-                moveScore += evaluateMove(A, row, col, opponent);//该位置防守评分
+                if (!killermode) {
+                    moveScore += 0.4 * evaluateMove(A, row, col, opponent);//该位置防守评分
+                }
                 Coordinate move(row, col, moveScore);
 
                 if (topMoves.size() < 10) {
@@ -537,27 +509,19 @@ std::vector<Coordinate> generateAndSortMoves(Board& A, int player) {
     return moves;
 }
 
-//判断currentmove是否会生成威胁点位
-bool detectThreats(int player, Board& A, Coordinate& CurrentMove, std::vector<Coordinate>& threatPositions) {
-    threatPositions.clear();
-    // 根据 index 的范围确定遍历方向
+bool detectKillMove(int player, Board& A, Coordinate& CurrentMove, Coordinate& killPositions) {
+    const std::unordered_set<int> killPatterns = { 12221, 122221, 122121, 121221,12222,22221,22122,21222,22212 }; // 常见杀棋棋型
+    A.MakeMove(CurrentMove.x, CurrentMove.y, player);
     Coordinate temp;
-    std::unordered_map<Coordinate, int, CoordinateHash> threatMap;  // 存储威胁信息和权重
-    int index[4];
-    index[0] = A.rowIndex(CurrentMove.x);
-    index[1] = A.colIndex(CurrentMove.y);
-    index[2] = A.diagIndex(CurrentMove.x, CurrentMove.y);
-    index[3] = A.antiDiagIndex(CurrentMove.x, CurrentMove.y);
+    int index[4] = { A.rowIndex(CurrentMove.x), A.colIndex(CurrentMove.y), A.diagIndex(CurrentMove.x, CurrentMove.y), A.antiDiagIndex(CurrentMove.x, CurrentMove.y) };
     int dRow, dCol;
+
     for (int i = 0; i < 4; i++) {
         GetDir(temp, index[i], dRow, dCol);
-        int binaryPattern = 0;
-        int threatLevel = 0;
+        std::vector<int> window(6, 0);  // 长度为6的窗口
 
-        std::vector<int> window(5, 0); // 初始化窗口
-
-        // 初始化窗口的前5个位置
-        for (int k = 0; k < 5 && judgeInRange(temp); ++k) {
+        // 初始化窗口的前6个位置
+        for (int k = 0; k < 6 && judgeInRange(temp); ++k) {
             window[k] = (A.board[temp.x][temp.y] == EMPTY) ? 1 : (A.board[temp.x][temp.y] == player) ? 2 : 3;
             temp.x += dRow;
             temp.y += dCol;
@@ -565,147 +529,111 @@ bool detectThreats(int player, Board& A, Coordinate& CurrentMove, std::vector<Co
 
         // 滑动窗口遍历整个行/列/对角线
         while (judgeInRange(temp)) {
-            // 将当前窗口转换为10进制棋型编码
-            int pattern = 0;
+            int pattern5 = 0, pattern6 = 0;
+
+            // 前5位转换为一个数
             for (int k = 0; k < 5; ++k) {
-                pattern = pattern * 10 + window[k];
+                pattern5 = pattern5 * 10 + window[k];
+            }
+            pattern6 = pattern5 * 10 + window[5];  // 第6位单独转换
+
+            // 检查当前5位或6位的模式是否为杀棋
+            if (killPatterns.count(pattern5) > 0 || killPatterns.count(pattern6) > 0) {
+                killPositions = CurrentMove;
+                //Coordinate killPosition = temp;  // 设置杀棋位置
+                //if (killPatterns.count(pattern5) > 0) {
+                //    if(pattern5==12221)
+                //    {
+                //        killPositions.push_back(CurrentMove);
+                //        killPosition.x -= 6 * dRow;
+                //        killPosition.y -= 6 * dCol;
+                //        killPositions.push_back(killPosition);
+                //        killPosition.x += 4 * dRow;
+                //        killPosition.y += 4 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else if(pattern5==12222)
+                //    {
+                //        killPosition.x -= 6 * dRow;
+                //        killPosition.y -= 6 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else if(pattern5 == 21222)
+                //    {
+                //        killPosition.x -= 5 * dRow;
+                //        killPosition.y -= 5 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else if(pattern5 == 22122)
+                //    {
+                //        killPosition.x -= 4 * dRow;
+                //        killPosition.y -= 4 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else if (pattern5 == 22212)
+                //    {
+                //        killPosition.x -= 3 * dRow;
+                //        killPosition.y -= 3 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else
+                //    {
+                //        killPosition.x -= 2 * dRow;
+                //        killPosition.y -= 2 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //}
+                //if (killPatterns.count(pattern6) > 0) {
+                //    if (pattern6 == 122221) {
+                //        killPosition.x -= 6 * dRow;
+                //        killPosition.y -= 6 * dCol;
+                //        killPositions.push_back(killPosition);
+                //        killPosition.x += 5 * dRow;
+                //        killPosition.y += 5 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else if (pattern6 == 122121) {
+                //        killPosition.x -= dRow;
+                //        killPosition.y -= dCol;
+                //        killPositions.push_back(killPosition);
+                //        killPosition.x -= 2 * dRow;
+                //        killPosition.y -= 2 * dCol;
+                //        killPositions.push_back(killPosition);
+                //        killPosition.x -= 3 * dRow;
+                //        killPosition.y -= 3 * dCol;
+                //        killPositions.push_back(killPosition);
+                //    }
+                //    else {//121221
+                //        killPosition.x -= dRow;
+                //        killPosition.y -= dCol;
+                //        killPositions.push_back(killPosition);
+                //        killPosition.x -= 3 * dRow;
+                //        killPosition.y -= 3 * dCol;
+                //        killPositions.push_back(killPosition);
+                //        killPosition.x -= 2 * dRow;
+                //        killPosition.y -= 2 * dCol;
+                //        killPositions.push_back(killPosition);
+
+                //    }
+                //}
+                A.UndoMove(CurrentMove.x, CurrentMove.y);
+                return true;  // 找到杀棋点后立即返回
             }
 
-            // 检查该棋型是否存在于威胁表中
-            if (ThreatMap.find(pattern) != ThreatMap.end()) {
-                int threatValue = ThreatMap.at(pattern);
+            // 移动窗口：移除旧的，添加新的
+            for (int k = 0; k < 5; ++k) window[k] = window[k + 1];
+            window[5] = (judgeInRange(temp)) ? ((A.board[temp.x][temp.y] == EMPTY) ? 1 : (A.board[temp.x][temp.y] == player) ? 2 : 3) : 9;
 
-                Coordinate threatPosition1, threatPosition2;
-                if (pattern == 13331 || pattern == 12221 || pattern == 21221 || pattern == 31331 || pattern == 12122 || pattern == 13133 || pattern == 12212 || pattern == 13313) { // 例如 `21221` or `_XXX_`
-                    if (pattern == 13331 || pattern == 12221) {
-                        threatPosition1 = temp;   // 第一个空位
-                        threatPosition1.x -= 5 * dRow;
-                        threatPosition1.y -= 5 * dCol;
-
-                        threatPosition2 = temp;   // 第二个空位
-                        threatPosition2.x -= dRow;
-                        threatPosition2.y -= dCol;
-                    }
-                    else if (pattern == 21221 || pattern == 31331) {
-                        threatPosition1 = temp;   // 第一个空位
-                        threatPosition1.x -= 4 * dRow;
-                        threatPosition1.y -= 4 * dCol;
-
-                        threatPosition2 = temp;   // 第二个空位
-                        threatPosition2.x -= dRow;
-                        threatPosition2.y -= dCol;
-                    }
-                    else if (pattern == 12122 || pattern == 13133) {
-                        threatPosition1 = temp;
-                        threatPosition1.x -= 3 * dRow;
-                        threatPosition1.y -= 3 * dCol;
-
-                        threatPosition2 = temp;   // 第二个空位
-                        threatPosition2.x -= 5 * dRow;
-                        threatPosition2.y -= 5 * dCol;
-                    }
-                    else {// pattern==12212||pattern==13313
-                        threatPosition1 = temp;   // 第一个空位
-                        threatPosition1.x -= 5 * dRow;
-                        threatPosition1.y -= 5 * dCol;
-
-                        threatPosition2 = temp;   // 第二个空位
-                        threatPosition2.x -= 2 * dRow;
-                        threatPosition2.y -= 2 * dCol;
-                    }
-                    if (evaluateMove(A, threatPosition1.x, threatPosition1.y, myFlag) > evaluateMove(A, threatPosition2.x, threatPosition2.y, myFlag))
-                    {
-                        // 累加威胁值
-                        if (threatMap.find(threatPosition1) != threatMap.end()) {
-                            threatMap[threatPosition1] += threatValue;
-                        }
-                        else {
-                            threatMap[threatPosition1] = threatValue;
-                        }
-                    }
-                    else
-                    {
-                        if (threatMap.find(threatPosition2) != threatMap.end()) {
-                            threatMap[threatPosition2] += threatValue;
-                        }
-                        else {
-                            threatMap[threatPosition2] = threatValue;
-                        }
-                    }
-                }
-                // 其他单个空位的威胁位置
-
-                else {
-                    Coordinate threatPosition = temp;
-                    if (pattern == 12222 || pattern == 13333) {
-                        threatPosition.x -= 5 * dRow;
-                        threatPosition.y -= 5 * dCol;
-                    }
-                    else if (pattern == 22221 || pattern == 33331) {
-                        threatPosition.x -= dRow;
-                        threatPosition.y -= dCol;
-                    }
-                    else if (pattern == 22212 || pattern == 33313) {
-                        threatPosition.x -= 2 * dRow;
-                        threatPosition.y -= 2 * dCol;
-                    }
-                    else if (pattern == 22122 || pattern == 33133) {
-                        threatPosition.x -= 3 * dRow;
-                        threatPosition.y -= 3 * dCol;
-                    }
-                    else if (pattern == 21222 || pattern == 31333) {
-                        threatPosition.x -= 4 * dRow;
-                        threatPosition.y -= 4 * dCol;
-                    }
-
-                    // 累加威胁值
-                    if (threatMap.find(threatPosition) != threatMap.end()) {
-                        threatMap[threatPosition] += threatValue;
-                    }
-                    else {
-                        threatMap[threatPosition] = threatValue;
-                    }
-                }
-            }
-
-
-            // 滑动窗口：移除旧的，添加新的
-            for (int k = 0; k < 4; ++k) {
-                window[k] = window[k + 1];
-            }
-            window[4] = (A.board[temp.x][temp.y] == EMPTY) ? 1 : (A.board[temp.x][temp.y] == player) ? 2 : 3;
             temp.x += dRow;
             temp.y += dCol;
         }
-
     }
-
-    // 将威胁位置按权重排序
-    std::vector<std::pair<Coordinate, int>> sortedThreats(threatMap.begin(), threatMap.end());
-    std::sort(sortedThreats.begin(), sortedThreats.end(), [](const std::pair<Coordinate, int>& a, const std::pair<Coordinate, int>& b) {
-        return a.second > b.second;  // 按照威胁权重降序排列
-        });
-
-    // 将最高威胁的所有位置返回
-    for (const auto& threat : sortedThreats) {
-        if (judgeInRange(threat.first) && A.board[threat.first.x][threat.first.y] == EMPTY) {
-            threatPositions.push_back(threat.first);
-        }
-    }
-
-    return !threatPositions.empty();  // 没有威胁时返回 false
+    A.UndoMove(CurrentMove.x, CurrentMove.y);
+    return false;  // 没找到杀棋点则返回 false
 }
 
 int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& bestMove) {
-    if (depth == 5);
     uint64_t hashValue = currentHash; // 假设 currentHash 是当前棋盘状态的哈希值
-    std::vector<Coordinate> moveline;
-    if (depth != MAX_DEPTH) {
-        int cachedScore = retrieveHashEntry(hashValue, alpha, beta);
-        if (cachedScore != UNKNOWN) {
-            return cachedScore;
-        }
-    }
     int score1 = evaluateBoard(A, myFlag);
     int score2 = evaluateBoard(A, enemyFlag);
 
@@ -715,22 +643,27 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
     if (score2 >= SCORE_FIVE) {
         return MIN_SCORE + 1;
     }
+    if (depth != MAX_DEPTH) {
+        int cachedScore = retrieveHashEntry(hashValue, alpha, beta);
+        if (cachedScore != UNKNOWN) {
+            return cachedScore;
+        }
+    }
     //任意一方取胜直接返回（相当于到达叶节点）
     if (depth == 0) {
-        int finalScore = score1 - score2;
+        int finalScore;
+        finalScore = score1 - score2;
         storeHashEntry(hashValue, finalScore, HASH_EXACT);
         return finalScore;  // 到达递归深度时返回评估值
     }
-    int count = 0;
     int flag = UNKNOWN;
-    std::vector<Coordinate> possiblePositions = generateAndSortMoves(A, player);
+    std::vector<Coordinate> possiblePositions = generateAndSortMoves(A, player, false);
     if (player == myFlag) {  // Maximizing player (AI)
         int value = _INF;
         int count = 0;
         for (const Coordinate& pos : possiblePositions) {
 
             A.MakeMove(pos.x, pos.y, player);
-
             value = std::max(value, AlphaBeta(A, depth - 1, alpha, beta, enemyFlag, bestMove));
             if (value > alpha) {
                 alpha = value;
@@ -740,16 +673,18 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
                     bestMove = pos;
                 }
             }
-            /*if (depth == MAX_DEPTH) {
-                std::cout << "(" << pos.x << "," << pos.y << ")" << "score:" << value << std::endl;
-            }*/
+            //if (depth==MAX_DEPTH)
+            //{
+            //    printf("DEBUG CURRENT MYMMOVE %d,%d,score:%d\n", pos.x, pos.y, value);
+            //    fflush(stdout);
+            //}
             A.UndoMove(pos.x, pos.y);
-            count++;
-            if (count >= 5) {
+            if (alpha >= beta) {  // Beta 剪枝
+                flag = HASH_BETA;
                 break;
             }
-            if (value >= beta) {  // Beta 剪枝
-                flag = HASH_BETA;
+            count++;
+            if (count >= 5) {
                 break;
             }
         }
@@ -761,21 +696,24 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
         int count = 0;
         for (const Coordinate& pos : possiblePositions) {
             A.MakeMove(pos.x, pos.y, player);
-
+            //if (depth)
+            //{
+            //    printf("DEBUG CURRENT OP MOVE: %d,%d,score:%d\n", pos.x, pos.y, value);
+            //    fflush(stdout);
+            //}
             value = std::min(value, AlphaBeta(A, depth - 1, alpha, beta, myFlag, bestMove));
 
             if (value < beta) {
                 flag = HASH_EXACT;
                 beta = value;
             }
-
             A.UndoMove(pos.x, pos.y);
-            count++;
-            if (count >= 5) {
+            if (beta <= alpha) {  // Alpha 剪枝
+                flag = HASH_ALPHA;
                 break;
             }
-            if (value <= alpha) {  // Alpha 剪枝
-                flag = HASH_ALPHA;
+            count++;
+            if (count >= 5) {
                 break;
             }
         }
@@ -784,14 +722,114 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
     }
 }
 
+// 算杀函数 findKillerMove
+int KillerSearch(Board& A, int depth, int alpha, int beta, int player, Coordinate& bestMove) {
+    bool maximizingPlayer = false;
+    if (player == myFlag) {
+        maximizingPlayer = true;
+    }
+    if (depth == 0) {
+        if (player == myFlag)
+            return evaluateBoard(A, myFlag);
+        else
+        {
+            return -evaluateBoard(A, enemyFlag);
+        }
+    }
+
+    int value = maximizingPlayer ? -INF : INF;  // 初始化层极值
+    std::vector<Coordinate> checkPositions = generateAndSortMoves(A, player, true);
+    std::vector<Coordinate> killMoves;
+    killMoves.clear();
+    if (maximizingPlayer) {
+        // MAX层，获取己方的活三和冲四节点,
+        int count=0;
+        for (Coordinate& pos : checkPositions) {
+            Coordinate killMove;
+            if (detectKillMove(player, A, pos, killMove)) {
+                killMoves.push_back(killMove);
+            }
+            else
+            {
+                for(int i = 0;i<3;i++){
+                    killMoves.push_back(checkPositions[i]);//没有能杀棋节点就遍历前三个高分点
+                }
+            }
+        }
+        for (const Coordinate& move : killMoves) {
+            if (A.board[move.x][move.y] == EMPTY) {
+                A.MakeMove(move.x, move.y, player);
+                int score = KillerSearch(A, depth - 1, alpha, beta, 3 - player, bestMove);  // 递归 MIN 层
+                A.UndoMove(move.x, move.y);
+                if (score >= SCORE_FIVE) {
+                    //bestMove = move;  // 在最高层记录最佳移动
+                    return score;
+                }
+                if (score > value) {
+                    value = score;
+                    if(depth==12)
+                        bestMove = move;  // 在最高层记录最佳移动
+                }
+                alpha = std::max(alpha, value);
+                if (alpha >= beta) {
+                    break;  // Beta 剪枝
+                }
+            }
+        }
+    }
+    else {
+        // MIN层，获取对方和己方的活三和冲四节点
+        int count = 0;
+        std::vector<Coordinate> threatpos;
+        for (Coordinate& pos : checkPositions) {
+            Coordinate threatMove;
+            Coordinate killMove;
+            if (detectKillMove(player, A, pos, threatMove)|| detectKillMove(player, A, pos, killMove)) { //敌方威胁点
+                killMoves.push_back(threatMove);
+                killMoves.push_back(killMove);
+            }
+        }
+        for (const auto& move : killMoves) {
+            if (A.board[move.x][move.y] == EMPTY) {
+                A.MakeMove(move.x, move.y, player);
+                int score = KillerSearch(A, depth - 1, alpha, beta, 3 - player, bestMove);  // 递归 MAX 层
+                A.UndoMove(move.x, move.y);
+                if (score >= -SCORE_FIVE) {
+                    bestMove = move;
+                    return score;  // 找到不败节点
+                }
+                if (score < value) {
+                    value = score;
+                }
+                beta = std::min(beta, value);
+                if (alpha >= beta) {
+                    break;  // Alpha 剪枝
+                }
+            }
+        }
+    }
+    return value;
+}
+
+Coordinate getBestMove(Board& A, int depth, int player) {
+    Coordinate bestMove;  // 初始化最佳移动
+    int score = AlphaBeta(A, depth, _INF, INF, player, bestMove);
+
+    // 检查AlphaBeta是否找到必胜局面（通常通过分数判断）
+    if (score < SCORE_FIVE) {
+        // 如果AlphaBeta没有找到必胜局面，进行较大深度的算杀搜索
+        KillerSearch(A, 12, _INF, INF, player, bestMove);
+    }
+
+    return bestMove;
+}
 void loop()
 {
     Board A;
     char tag[10] = { 0 };
-    int status;
     Coordinate command;
     Coordinate BestMove;
-    std::vector<Coordinate> threatPositions;
+    int round = 0;
     while (1) {
         memset(tag, 0, sizeof(tag));
         scanf("%s", tag);
@@ -804,15 +842,11 @@ void loop()
         else if (strcmp(tag, PLACE) == 0) {
             scanf("%d %d", &command.x, &command.y);
             A.MakeMove(command.x, command.y, enemyFlag);
+            round++;
         }
         else if (strcmp(tag, TURN) == 0) {
-            if (judgeInRange(command) && detectThreats(enemyFlag, A, command, threatPositions)) {//判断对方落子是否会形成威胁情况
-                BestMove = threatPositions.front();
-            }
-            else {
-                AlphaBeta(A, MAX_DEPTH, _INF, INF, myFlag, BestMove);
-            }
-            
+            KillerSearch(A, 13, _INF, INF, myFlag, BestMove);
+
             if (!judgeInRange(BestMove)) {
                 for (int i = 0; i < BOARD_SIZE; i++) {
                     for (int j = 0; j < BOARD_SIZE; j++) {
@@ -825,11 +859,10 @@ void loop()
             A.MakeMove(BestMove.x, BestMove.y, myFlag);
             printf("%d %d\n", BestMove.x, BestMove.y);
             fflush(stdout);
-            std::cout << "black:" << A.currentBoardScore[0] << "white:" << A.currentBoardScore[1] << std::endl;
+            round++;
         }
 
         else if (strcmp(tag, END) == 0) {
-            scanf("%d", &status);
             exit(0);
         }
 
@@ -837,6 +870,25 @@ void loop()
 }
 int main()
 {
+    // Board A;
+    // std::cout<<A.currentBoardScore[0]<<","<<A.currentBoardScore[1]<<std::endl;
+    // A.MakeMove(4,4,WHITE);
+    // std::cout<<A.currentBoardScore[0]<<","<<A.currentBoardScore[1]<<std::endl;
+    // A.MakeMove(7,7,WHITE);
+    // // std::cout<<evaluateMove(A,7,7,WHITE)<<std::endl;
+    // // int x = 7; 
+    // // int y = 7;
+    // // int currentPlayer = WHITE;
+    // // std::cout<<std::endl;
+    // // std::cout<<CalculateLineScore(A, currentPlayer, A.rowIndex(x))<<std::endl;
+    // // std::cout<<CalculateLineScore(A, currentPlayer, A.colIndex(y))<<std::endl;
+    // // std::cout<< CalculateLineScore(A, currentPlayer, A.diagIndex(x, y))<<std::endl;
+    // // std::cout<<CalculateLineScore(A, currentPlayer, A.antiDiagIndex(x, y))<<std::endl;
+    // std::cout<<A.currentBoardScore[0]<<","<<A.currentBoardScore[1]<<std::endl;
+    // A.MakeMove(4,7,BLACK);
+    // std::cout<<A.currentBoardScore[0]<<","<<A.currentBoardScore[1]<<std::endl;
+    // A.MakeMove(7,4,BLACK);
+    // std::cout<<A.currentBoardScore[0]<<","<<A.currentBoardScore[1]<<std::endl;
     loop();
     return 0;
 }
