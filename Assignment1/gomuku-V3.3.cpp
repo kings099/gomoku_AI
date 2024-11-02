@@ -14,7 +14,7 @@
 #include <string>
 #include <random>
 #include <time.h>
-//7层6子优化后版
+//7层5子优化后版
 
 //VERSION1.0:初步实现alphabeta剪枝叶算法，采用先前作业使用过的unordered_set来优化遍历棋盘，原理是把坐标用哈希的形式存储，降低复杂度，同时鉴于五子棋的性质，把检索范围聚焦在有棋位置的
 //附近4格（本来想尝试2格，但效果很差）其实用4格已经接近完全遍历了。。但是用哈希存储总会快点。后续优化方向：1.优化存储的方法，应该存在比现有方法更好的遍历方法；2.优化评分标准，注意到
@@ -61,6 +61,7 @@
 // 
 // VERSION 3.3 修复了部分评分函数的bug，之前的评分函数在计算列时会在错误的下标位置计分，在计算对角线时会把长度小于5的对角线重复计算到不属于他的下标里，所以会出现数组越界的情况（大概率是右下部分位置的反对角线）
 // 同时在启发式评估时加大了杀棋位置的比重，比先前的效果好了很多，大概率是终于能抛弃威胁识别函数了，目前仅依靠启发式搜索+杀棋判断来进行alphabeta剪枝，效果似乎还不错
+// 更新：修复了122222这样的5连在棋形识别时被错误识别为冲4的问题，为键值表添加深度判断逻辑
 //
 
 // board information
@@ -111,6 +112,7 @@ const int BOARD_MIDDLE_2 = 6;
 struct HashEntry {
     int score;        // 棋盘的评分
     int flag;         // 哈希类型标志
+    int depth;
 };
 
 std::vector<std::vector<std::vector<uint64_t>>> zobristTable(BOARD_SIZE, std::vector<std::vector<uint64_t>>(BOARD_SIZE, std::vector<uint64_t>(3, 0)));
@@ -121,6 +123,7 @@ uint64_t currentHash = 0;
 const std::unordered_map<int, int> ScoreMap = {
     // 16种评分
     {22222, SCORE_FIVE},// XXXXX
+    {122222,SCORE_FIVE},
     {122221,SCORE_FOUR},// _XXXX_
     {122211, SCORE_THREE},// _XXX__
     {112221, SCORE_THREE},// __XXX_
@@ -154,21 +157,24 @@ void updateHash(int row, int col, int piece) {
     currentHash ^= zobristTable[row][col][piece];
 }
 
-void storeHashEntry(uint64_t hashValue, int score, int flag) {
-    transpositionTable[hashValue] = { score,flag };
+void storeHashEntry(uint64_t hashValue, int score, int flag,int depth) {
+    transpositionTable[hashValue] = { score,flag,depth };
 }
 
-int retrieveHashEntry(uint64_t hashValue, int &alpha, int &beta) {
+int retrieveHashEntry(uint64_t hashValue, int &alpha, int &beta,int depth) {
     if (transpositionTable.find(hashValue) != transpositionTable.end()) {
         HashEntry entry = transpositionTable[hashValue];
-        if (entry.flag == HASH_EXACT) {
-            return entry.score;
-        }
-        else if (entry.flag == HASH_ALPHA && entry.score <= alpha) {
-            return entry.score;
-        }
-        else if (entry.flag == HASH_BETA && entry.score >= beta) {
-            return entry.score;
+        if(entry.depth>=depth)
+        {
+            if (entry.flag == HASH_EXACT) {
+                return entry.score;
+            }
+            else if (entry.flag == HASH_ALPHA && entry.score <= alpha) {
+                return entry.score;
+            }
+            else if (entry.flag == HASH_BETA && entry.score >= beta) {
+                return entry.score;
+            }
         }
     }
     return UNKNOWN;
@@ -198,11 +204,6 @@ struct Coordinate {
         }
     }
 };
-struct ThreatInfo {
-    Coordinate position; // 威胁位置
-    int weight;          // 权重
-};
-
 // 自定义哈希函数对象
 struct CoordinateHash {
     std::size_t operator()(const Coordinate& coord) const {
@@ -577,7 +578,11 @@ bool detectKillMove(int player, Board& A, Coordinate& CurrentMove) {
         }
         GetDir(temp, index[i], dRow, dCol);
         std::vector<int> window(6, 0);  // 长度为6的窗口
-
+        Coordinate start(CurrentMove.x - 5 * dRow, CurrentMove.y - 5 * dCol);//从当前位置往前四个位置开始遍历，避免判断到该条上其他位置的杀棋
+        if (judgeInRange(start)) {
+            temp = start;
+        }
+        Coordinate end(CurrentMove.x + 6 * dRow, CurrentMove.y + 6 * dCol);
         // 初始化窗口的前6个位置
         for (int k = 0; k < 6 && judgeInRange(temp); ++k) {
             window[k] = (A.board[temp.x][temp.y] == EMPTY) ? 1 : (A.board[temp.x][temp.y] == player) ? 2 : 3;
@@ -587,6 +592,9 @@ bool detectKillMove(int player, Board& A, Coordinate& CurrentMove) {
 
         // 滑动窗口遍历整个行/列/对角线
         while (judgeInRange(temp)) {
+            if (temp == end) {//遍历到模拟落子位置的后4个位置
+                break;
+            }
             int pattern5 = 0, pattern6 = 0;
 
             // 前5位转换为一个数
@@ -625,7 +633,7 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
         return MIN_SCORE + 1;
     }
     if (depth != MAX_DEPTH) {
-        int cachedScore = retrieveHashEntry(hashValue, alpha, beta);
+        int cachedScore = retrieveHashEntry(hashValue, alpha, beta,MAX_DEPTH-depth);
         if (cachedScore != UNKNOWN) {
             return cachedScore;
         }
@@ -634,7 +642,7 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
     if (depth == 0) {
         int finalScore;
         finalScore = score1 - score2;
-        storeHashEntry(hashValue, finalScore, HASH_EXACT);
+        storeHashEntry(hashValue, finalScore, HASH_EXACT,MAX_DEPTH);
         return finalScore;  // 到达递归深度时返回评估值
     }
     std::vector<Coordinate> possiblePositions = generateAndSortMoves(A, player, false);
@@ -665,11 +673,11 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
                 break;
             }
             count++;
-            if (count >= 6) {
+            if (count >= 5) {
                 break;
             }
         }
-        storeHashEntry(hashValue, value, flag);
+        storeHashEntry(hashValue, value, flag,MAX_DEPTH-depth);
         return value;
     }
     else {  // Minimizing player (Opponent)
@@ -694,11 +702,11 @@ int AlphaBeta(Board& A, int depth, int alpha, int beta, int player, Coordinate& 
                 break;
             }
             count++;
-            if (count >= 6) {
+            if (count >= 5) {
                 break;
             }
         }
-        storeHashEntry(hashValue, value, flag);
+        storeHashEntry(hashValue, value, flag,MAX_DEPTH-depth);
         return value;
     }
 }
